@@ -7,6 +7,7 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Courier New', monospace; overflow: hidden; background: #000; cursor: none; }
+        body.paused { cursor: default; }
         #gameCanvas { display: block; }
         #hud { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; color: #fff; }
         #inventory { position: absolute; top: 20px; right: 20px; background: rgba(10,0,0,0.9); padding: 15px 20px; border: 1px solid #440000; font-size: 14px; box-shadow: 0 4px 30px rgba(100,0,0,0.5); }
@@ -36,6 +37,16 @@
         #clickToStart .controls { margin-top: 40px; margin-bottom: 50px; }
         #clickToStart .start { color: #c00; margin-top: 40px; font-size: 20px; animation: pulse 2s infinite; text-shadow: 0 0 25px rgba(200,0,0,0.9); letter-spacing: 4px; font-weight: bold; }
         @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+        #loadingScreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 999; }
+        #loadingScreen h2 { color: #c00; font-size: 48px; margin-bottom: 30px; text-shadow: 0 0 30px rgba(200,0,0,0.8); }
+        #loadingBar { width: 300px; height: 4px; background: #1a0000; border: 1px solid #440000; margin-bottom: 20px; }
+        #loadingFill { width: 0%; height: 100%; background: #c00; box-shadow: 0 0 10px rgba(200,0,0,0.8); transition: width 0.3s; }
+        #loadingText { color: #666; font-size: 14px; }
+        #flashlightPrompt { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.95); padding: 40px 60px; border: 2px solid #c00; display: none; z-index: 998; text-align: center; animation: slideDown 0.5s; }
+        @keyframes slideDown { 0% { top: 30%; opacity: 0; } 100% { top: 50%; opacity: 1; } }
+        #flashlightPrompt h2 { color: #c00; font-size: 36px; margin-bottom: 20px; text-shadow: 0 0 20px rgba(200,0,0,0.8); }
+        #flashlightPrompt p { color: #aaa; font-size: 18px; margin-bottom: 30px; }
+        #flashlightPrompt .key { color: #fff; font-size: 48px; font-weight: bold; background: #1a0000; padding: 15px 30px; border: 2px solid #c00; display: inline-block; box-shadow: 0 0 30px rgba(200,0,0,0.6); }
         #vignette { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; background: radial-gradient(circle at center, transparent 0%, transparent 40%, rgba(0,0,0,0.4) 70%, rgba(0,0,0,0.8) 100%); }
         #escapeScreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: radial-gradient(circle, #ffffff 0%, #ffffee 30%, #ffddaa 60%, #000000 100%); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 2000; animation: fadeToWhite 3s; }
         @keyframes fadeToWhite { 0% { opacity: 0; } 100% { opacity: 1; } }
@@ -75,6 +86,16 @@
             </div>
             <p class="start">CLICK TO ENTER</p>
         </div>
+        <div id="loadingScreen">
+            <h2>LOADING...</h2>
+            <div id="loadingBar"><div id="loadingFill"></div></div>
+            <div id="loadingText">Initializing basement...</div>
+        </div>
+        <div id="flashlightPrompt">
+            <h2>PRESS F FOR FLASHLIGHT</h2>
+            <p>You'll need this in the darkness</p>
+            <div class="key">F</div>
+        </div>
     </div>
     <div id="escapeScreen">
         <h1>YOU ESCAPED</h1>
@@ -83,7 +104,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         let scene, camera, renderer, walls = [], keyMesh, doorLeft, doorRight, flashlight, keyLight;
-        let hallway, stairs, exitLight;
+        let hallway, stairs, exitLight, blockingWall;
         const canvas = document.getElementById('gameCanvas');
         const mapCanvas = document.getElementById('mapCanvas');
         const mapCtx = mapCanvas.getContext('2d');
@@ -95,6 +116,8 @@
         let direction = new THREE.Vector3();
         let yaw = 0, pitch = 0;
         let lookingAtObject = null;
+        let flashlightReady = false;
+        let promptShown = false;
         
         const keySpawnLocations = [
             {x: -30, z: 15}, {x: 40, z: -20}, {x: -15, z: -30}, 
@@ -132,7 +155,7 @@
             // Walls - much bigger map with open spaces
             const wallMat = new THREE.MeshStandardMaterial({color: 0x2a2a2a, roughness: 0.95});
             const wallData = [
-                // Outer walls
+                // Outer walls - ALL SIDES
                 {x: 0, z: -50, w: 120, h: 0.3}, {x: 0, z: 50, w: 120, h: 0.3},
                 {x: -60, z: 0, w: 0.3, h: 100}, {x: 60, z: 0, w: 0.3, h: 100},
                 // Inner maze walls with gaps
@@ -153,48 +176,65 @@
                 walls.push(wall);
             });
             
-            // Door frame walls (create opening for door)
+            // Door frame walls - wider gap for door
             const doorFrameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 2), wallMat);
-            doorFrameLeft.position.set(52, 2, -49.5);
+            doorFrameLeft.position.set(51, 2, -49.5);
             doorFrameLeft.castShadow = true;
+            doorFrameLeft.userData.isWall = true;
             scene.add(doorFrameLeft);
             walls.push(doorFrameLeft);
             
             const doorFrameRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 2), wallMat);
-            doorFrameRight.position.set(60, 2, -49.5);
+            doorFrameRight.position.set(61, 2, -49.5);
             doorFrameRight.castShadow = true;
+            doorFrameRight.userData.isWall = true;
             scene.add(doorFrameRight);
             walls.push(doorFrameRight);
             
-            // Hallway after door - extended
+            // Top of door frame
+            const doorTop = new THREE.Mesh(new THREE.BoxGeometry(10, 0.3, 0.3), wallMat);
+            doorTop.position.set(56, 3.85, -49.5);
+            doorTop.castShadow = true;
+            scene.add(doorTop);
+            
+            // BLOCKING WALL behind door - gets removed when door opens
+            let blockingWall = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 0.3), wallMat);
+            blockingWall.position.set(56, 2, -50.2);
+            blockingWall.castShadow = true;
+            blockingWall.userData.isWall = true;
+            scene.add(blockingWall);
+            walls.push(blockingWall);
+            
+            // Hallway after door - extended and lower
             const hallwayFloor = new THREE.Mesh(new THREE.BoxGeometry(8, 0.1, 50), floorMat);
-            hallwayFloor.position.set(56, 0, -45);
+            hallwayFloor.position.set(56, -6, -75);
             hallwayFloor.receiveShadow = true;
             scene.add(hallwayFloor);
             
             const hallwayCeiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.1, 50), new THREE.MeshStandardMaterial({color: 0x0a0a0a}));
-            hallwayCeiling.position.set(56, 4, -45);
+            hallwayCeiling.position.set(56, -2, -75);
+            hallwayCeiling.receiveShadow = true;
             scene.add(hallwayCeiling);
             
             // Hallway walls
             const hallwayWallLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 50), wallMat);
-            hallwayWallLeft.position.set(52, 2, -45);
+            hallwayWallLeft.position.set(52, -4, -75);
             hallwayWallLeft.castShadow = true;
             hallwayWallLeft.userData.isWall = true;
             scene.add(hallwayWallLeft);
             walls.push(hallwayWallLeft);
             
             const hallwayWallRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 50), wallMat);
-            hallwayWallRight.position.set(60, 2, -45);
+            hallwayWallRight.position.set(60, -4, -75);
             hallwayWallRight.castShadow = true;
             hallwayWallRight.userData.isWall = true;
             scene.add(hallwayWallRight);
             walls.push(hallwayWallRight);
             
-            // Stairs - moved further down hallway and added collision
-            for(let i = 0; i < 12; i++) {
-                const step = new THREE.Mesh(new THREE.BoxGeometry(8, 0.3, 1.5), new THREE.MeshStandardMaterial({color: 0x333333}));
-                step.position.set(56, 0.15 + i * 0.3, -55 - i * 1.5);
+            // Stairs - going DOWN from door
+            for(let i = 0; i < 15; i++) {
+                const step = new THREE.Mesh(new THREE.BoxGeometry(8, 0.3, 1.2), new THREE.MeshStandardMaterial({color: 0x333333}));
+                step.position.set(56, 1.75 - i * 0.5, -51 - i * 1.6);
                 step.receiveShadow = true;
                 step.castShadow = true;
                 step.userData.isWall = true;
@@ -202,24 +242,24 @@
                 walls.push(step);
             }
             
-            // Bright exit light - moved to end of stairs
-            exitLight = new THREE.PointLight(0xffffee, 8, 25);
-            exitLight.position.set(56, 5, -75);
+            // Bright exit light - at bottom of stairs
+            exitLight = new THREE.PointLight(0xffffee, 10, 30);
+            exitLight.position.set(56, -5, -95);
             scene.add(exitLight);
             
             const exitGlow = new THREE.Mesh(
-                new THREE.SphereGeometry(1.5, 16, 16),
+                new THREE.SphereGeometry(2, 16, 16),
                 new THREE.MeshBasicMaterial({color: 0xffffee})
             );
-            exitGlow.position.set(56, 4.5, -75);
+            exitGlow.position.set(56, -5, -95);
             scene.add(exitGlow);
             
-            // Door - FIXED positioning to properly block hallway
+            // Door - doors start together blocking hallway entrance
             const doorMat = new THREE.MeshStandardMaterial({color: 0x5a0000, roughness: 0.5, metalness: 0.3});
-            doorLeft = new THREE.Mesh(new THREE.BoxGeometry(2, 3.5, 0.2), doorMat);
-            doorRight = new THREE.Mesh(new THREE.BoxGeometry(2, 3.5, 0.2), doorMat);
-            doorLeft.position.set(54, 1.75, -49.9);
-            doorRight.position.set(58, 1.75, -49.9);
+            doorLeft = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 0.2), doorMat);
+            doorRight = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 0.2), doorMat);
+            doorLeft.position.set(54.75, 1.75, -49.9);
+            doorRight.position.set(57.25, 1.75, -49.9);
             doorLeft.castShadow = true;
             doorRight.castShadow = true;
             doorLeft.userData.isDoor = true;
@@ -314,9 +354,57 @@
         
         function startGame() {
             document.getElementById('clickToStart').style.display = 'none';
-            gameStarted = true;
-            canvas.requestPointerLock();
+            document.getElementById('loadingScreen').style.display = 'flex';
+            
+            const loadingFill = document.getElementById('loadingFill');
+            const loadingText = document.getElementById('loadingText');
+            const messages = ['Generating maze...', 'Placing objects...', 'Dimming lights...', 'Almost ready...'];
+            let progress = 0;
+            
+            const loadingInterval = setInterval(() => {
+                progress += 25;
+                loadingFill.style.width = progress + '%';
+                if (progress < 100) {
+                    loadingText.textContent = messages[progress / 25 - 1];
+                } else {
+                    clearInterval(loadingInterval);
+                    document.getElementById('loadingScreen').style.display = 'none';
+                    showFlashlightPrompt();
+                }
+            }, 600);
         }
+        
+        function showFlashlightPrompt() {
+            const prompt = document.getElementById('flashlightPrompt');
+            prompt.style.display = 'block';
+            promptShown = true;
+            
+            const checkF = (e) => {
+                if (e.key.toLowerCase() === 'f' && promptShown) {
+                    flashlightReady = true;
+                    flashlight.intensity = 4.5;
+                    document.getElementById('flashlightIndicator').textContent = '[F] FLASHLIGHT: ON';
+                    
+                    // Animate prompt moving down
+                    prompt.style.animation = 'slideUp 0.5s forwards';
+                    setTimeout(() => {
+                        prompt.style.display = 'none';
+                        gameStarted = true;
+                        canvas.requestPointerLock();
+                        promptShown = false;
+                    }, 500);
+                    
+                    window.removeEventListener('keydown', checkF);
+                }
+            };
+            
+            window.addEventListener('keydown', checkF);
+        }
+        
+        // Add slideUp animation
+        const style = document.createElement('style');
+        style.textContent = '@keyframes slideUp { 0% { top: 50%; opacity: 1; } 100% { top: 75%; opacity: 0; } }';
+        document.head.appendChild(style);
         
         function goToMenu() {
             document.exitPointerLock();
@@ -336,6 +424,8 @@
         });
         
         window.addEventListener('keydown', e => {
+            if (!gameStarted) return;
+            
             switch(e.key.toLowerCase()) {
                 case 'w': moveForward = true; break;
                 case 's': moveBackward = true; break;
@@ -344,7 +434,7 @@
                 case 'e': keys['e'] = true; break;
             }
             if (e.key === 'Escape') togglePause();
-            if (e.key.toLowerCase() === 'f') {
+            if (e.key.toLowerCase() === 'f' && flashlightReady) {
                 flashlight.intensity = flashlight.intensity > 0 ? 0 : 4.5;
                 document.getElementById('flashlightIndicator').textContent = `[F] FLASHLIGHT: ${flashlight.intensity > 0 ? 'ON' : 'OFF'}`;
             }
@@ -364,8 +454,14 @@
             if (!gameStarted) return;
             isPaused = !isPaused;
             document.getElementById('pauseMenu').style.display = isPaused ? 'block' : 'none';
-            if (!isPaused) canvas.requestPointerLock();
-            else document.exitPointerLock();
+            
+            if (isPaused) {
+                document.body.classList.add('paused');
+                document.exitPointerLock();
+            } else {
+                document.body.classList.remove('paused');
+                canvas.requestPointerLock();
+            }
         }
         
         function checkCollision(newPos) {
@@ -477,21 +573,30 @@
                     document.getElementById('obj1').classList.add('complete');
                     document.getElementById('interaction').style.display = 'none';
                     keyMesh.userData.canInteract = false;
-                } else if (lookingAtObject.userData.isDoor && hasKey && !doorOpening) {
+                } else                 if (lookingAtObject.userData.isDoor && hasKey && !doorOpening) {
                     doorOpening = true;
                     document.getElementById('obj2').classList.add('complete');
                     doorLeft.userData.canInteract = false;
                     doorRight.userData.canInteract = false;
+                    
+                    // IMMEDIATELY remove blocking wall when door starts opening
+                    if (blockingWall) {
+                        scene.remove(blockingWall);
+                        const wallIndex = walls.indexOf(blockingWall);
+                        if (wallIndex > -1) walls.splice(wallIndex, 1);
+                        blockingWall = null;
+                    }
                 }
                 
                 setTimeout(() => keys['e_used'] = false, 300);
             }
             
-            // DOOR OPENING ANIMATION - FIXED
+            // DOOR OPENING ANIMATION - doors slide apart revealing hallway
             if (doorOpening) {
                 doorOpenAmount += 0.04;
-                doorLeft.position.x = 54 - doorOpenAmount * 2;
-                doorRight.position.x = 58 + doorOpenAmount * 2;
+                doorLeft.position.x = 54.75 - doorOpenAmount * 3;
+                doorRight.position.x = 57.25 + doorOpenAmount * 3;
+                
                 if (doorOpenAmount >= 2) {
                     doorLeft.visible = false;
                     doorRight.visible = false;
@@ -523,35 +628,68 @@
             else if (angle > 225 && angle <= 315) dir2 = 'W';
             document.getElementById('compass').textContent = dir2;
             
-            // Draw map
+            // Draw map with ALL walls visible
             const scale = 1.9;
             mapCtx.fillStyle = '#050000';
             mapCtx.fillRect(0, 0, 230, 230);
-            mapCtx.strokeStyle = '#2a1010';
-            mapCtx.lineWidth = 4;
+            
+            // Draw ALL walls including maze walls
             walls.forEach(w => {
                 const box = new THREE.Box3().setFromObject(w);
                 const size = box.getSize(new THREE.Vector3());
-                mapCtx.fillStyle = '#1a0a0a';
-                mapCtx.fillRect((w.position.x+60)*scale - size.x*scale/2, (w.position.z+50)*scale - size.z*scale/2, size.x*scale, size.z*scale);
+                const center = box.getCenter(new THREE.Vector3());
+                mapCtx.fillStyle = '#3a2020';
+                mapCtx.fillRect(
+                    (center.x + 60) * scale - (size.x * scale) / 2,
+                    (center.z + 50) * scale - (size.z * scale) / 2,
+                    size.x * scale,
+                    size.z * scale
+                );
             });
+            
+            // Draw door
             if (doorLeft.visible || doorRight.visible) {
-                mapCtx.fillStyle = doorOpening ? '#ff4444' : '#8a0000';
-                mapCtx.fillRect((doorLeft.position.x+60)*scale, (doorLeft.position.z+50)*scale, (doorRight.position.x - doorLeft.position.x)*scale, 3);
+                mapCtx.fillStyle = doorOpening ? '#ff6666' : '#aa0000';
+                const doorCenterX = (doorLeft.position.x + doorRight.position.x) / 2;
+                const doorWidth = Math.abs(doorRight.position.x - doorLeft.position.x) + 2;
+                mapCtx.fillRect(
+                    (doorCenterX + 60) * scale - (doorWidth * scale) / 2,
+                    (doorLeft.position.z + 50) * scale - 1.5,
+                    doorWidth * scale,
+                    3
+                );
             }
+            
+            // Draw player - better looking dot with direction indicator
             mapCtx.fillStyle = '#00ff00';
             mapCtx.beginPath();
-            mapCtx.arc((camera.position.x+60)*scale, (camera.position.z+50)*scale, 5, 0, Math.PI*2);
+            mapCtx.arc((camera.position.x+60)*scale, (camera.position.z+50)*scale, 4, 0, Math.PI*2);
             mapCtx.fill();
+            
+            // Direction line - FIXED to point where player is facing
             mapCtx.strokeStyle = '#00ff00';
-            mapCtx.lineWidth = 2;
+            mapCtx.lineWidth = 3;
             mapCtx.beginPath();
             mapCtx.moveTo((camera.position.x+60)*scale, (camera.position.z+50)*scale);
-            mapCtx.lineTo(
-                (camera.position.x+60)*scale + Math.cos(-yaw + Math.PI/2) * 15,
-                (camera.position.z+50)*scale + Math.sin(-yaw + Math.PI/2) * 15
-            );
+            const dirX = (camera.position.x+60)*scale - Math.sin(yaw) * 12;
+            const dirZ = (camera.position.z+50)*scale - Math.cos(yaw) * 12;
+            mapCtx.lineTo(dirX, dirZ);
             mapCtx.stroke();
+            
+            // Direction triangle/arrow
+            mapCtx.fillStyle = '#00ff00';
+            mapCtx.beginPath();
+            mapCtx.moveTo(dirX, dirZ);
+            mapCtx.lineTo(
+                dirX - Math.sin(yaw - Math.PI/2) * 3,
+                dirZ - Math.cos(yaw - Math.PI/2) * 3
+            );
+            mapCtx.lineTo(
+                dirX - Math.sin(yaw + Math.PI/2) * 3,
+                dirZ - Math.cos(yaw + Math.PI/2) * 3
+            );
+            mapCtx.closePath();
+            mapCtx.fill();
         }
         
         function animate() {
