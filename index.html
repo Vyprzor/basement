@@ -53,6 +53,7 @@
         #escapeScreen h1 { font-size: 64px; color: #000; text-shadow: 0 0 30px rgba(255,255,255,0.8); margin-bottom: 20px; animation: fadeIn 2s 1s backwards; }
         #escapeScreen p { font-size: 20px; color: #333; animation: fadeIn 2s 2s backwards; }
         @keyframes fadeIn { 0% { opacity: 0; transform: translateY(20px); } 100% { opacity: 1; transform: translateY(0); } }
+        @keyframes slideUp { 0% { top: 50%; opacity: 1; } 100% { top: 75%; opacity: 0; } }
     </style>
 </head>
 <body>
@@ -104,13 +105,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         let scene, camera, renderer, walls = [], keyMesh, doorLeft, doorRight, flashlight, keyLight;
-        let hallway, stairs, exitLight, blockingWall;
+        let hallway, stairs = [], exitLight;
         const canvas = document.getElementById('gameCanvas');
         const mapCanvas = document.getElementById('mapCanvas');
         const mapCtx = mapCanvas.getContext('2d');
         
         let keys = {}, isPaused = false, gameWon = false, gameStarted = false;
         let hasKey = false, doorOpening = false, doorOpenAmount = 0;
+        let doorAnimationComplete = false;
         let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
         let velocity = new THREE.Vector3();
         let direction = new THREE.Vector3();
@@ -155,9 +157,11 @@
             // Walls - much bigger map with open spaces
             const wallMat = new THREE.MeshStandardMaterial({color: 0x2a2a2a, roughness: 0.95});
             const wallData = [
-                // Outer walls - ALL SIDES
-                {x: 0, z: -50, w: 120, h: 0.3}, {x: 0, z: 50, w: 120, h: 0.3},
-                {x: -60, z: 0, w: 0.3, h: 100}, {x: 60, z: 0, w: 0.3, h: 100},
+                // Outer walls - BACK WALL perfectly sealed except for door (51 to 61)
+                {x: -4.5, z: -50, w: 111, h: 0.3}, // Left section (-60 to 51)
+                {x: 85.5, z: -50, w: 49, h: 0.3}, // Right section (61 to 110)
+                {x: 0, z: 50, w: 120, h: 0.3}, // Front wall
+                {x: -60, z: 0, w: 0.3, h: 100}, {x: 60, z: 0, w: 0.3, h: 100}, // Side walls
                 // Inner maze walls with gaps
                 {x: -30, z: -20, w: 0.3, h: 25}, {x: -15, z: 10, w: 0.3, h: 30},
                 {x: 10, z: -15, w: 35, h: 0.3}, {x: 25, z: 15, w: 20, h: 0.3},
@@ -176,7 +180,7 @@
                 walls.push(wall);
             });
             
-            // Door frame walls - wider gap for door
+            // Door frame walls - gap is 10 units wide (5 + 5) to match the doors
             const doorFrameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 2), wallMat);
             doorFrameLeft.position.set(51, 2, -49.5);
             doorFrameLeft.castShadow = true;
@@ -191,75 +195,79 @@
             scene.add(doorFrameRight);
             walls.push(doorFrameRight);
             
-            // Top of door frame
-            const doorTop = new THREE.Mesh(new THREE.BoxGeometry(10, 0.3, 0.3), wallMat);
-            doorTop.position.set(56, 3.85, -49.5);
+            // Top of door frame - thicker/lower
+            const doorTop = new THREE.Mesh(new THREE.BoxGeometry(10, 0.6, 0.3), wallMat);
+            doorTop.position.set(56, 3.7, -49.5);
             doorTop.castShadow = true;
             scene.add(doorTop);
             
-            // BLOCKING WALL behind door - gets removed when door opens
-            let blockingWall = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 0.3), wallMat);
-            blockingWall.position.set(56, 2, -50.2);
-            blockingWall.castShadow = true;
-            blockingWall.userData.isWall = true;
-            scene.add(blockingWall);
-            walls.push(blockingWall);
+            // NO WALL BEHIND DOOR - completely open
             
-            // Hallway after door - extended and lower
-            const hallwayFloor = new THREE.Mesh(new THREE.BoxGeometry(8, 0.1, 50), floorMat);
-            hallwayFloor.position.set(56, -6, -75);
+            // HALLWAY - shorter, closer to door
+            const hallwayFloor = new THREE.Mesh(new THREE.BoxGeometry(9.8, 0.1, 15), floorMat);
+            hallwayFloor.position.set(56, 0, -60);
             hallwayFloor.receiveShadow = true;
             scene.add(hallwayFloor);
             
-            const hallwayCeiling = new THREE.Mesh(new THREE.BoxGeometry(8, 0.1, 50), new THREE.MeshStandardMaterial({color: 0x0a0a0a}));
-            hallwayCeiling.position.set(56, -2, -75);
+            const hallwayCeiling = new THREE.Mesh(new THREE.BoxGeometry(9.8, 0.1, 15), new THREE.MeshStandardMaterial({color: 0x0a0a0a}));
+            hallwayCeiling.position.set(56, 4, -60);
             hallwayCeiling.receiveShadow = true;
             scene.add(hallwayCeiling);
             
             // Hallway walls
-            const hallwayWallLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 50), wallMat);
-            hallwayWallLeft.position.set(52, -4, -75);
+            const hallwayWallLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 15), wallMat);
+            hallwayWallLeft.position.set(51.1, 2, -60);
             hallwayWallLeft.castShadow = true;
             hallwayWallLeft.userData.isWall = true;
             scene.add(hallwayWallLeft);
             walls.push(hallwayWallLeft);
             
-            const hallwayWallRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 50), wallMat);
-            hallwayWallRight.position.set(60, -4, -75);
+            const hallwayWallRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 15), wallMat);
+            hallwayWallRight.position.set(60.9, 2, -60);
             hallwayWallRight.castShadow = true;
             hallwayWallRight.userData.isWall = true;
             scene.add(hallwayWallRight);
             walls.push(hallwayWallRight);
             
-            // Stairs - going DOWN from door
-            for(let i = 0; i < 15; i++) {
-                const step = new THREE.Mesh(new THREE.BoxGeometry(8, 0.3, 1.2), new THREE.MeshStandardMaterial({color: 0x333333}));
-                step.position.set(56, 1.75 - i * 0.5, -51 - i * 1.6);
+            // STAIRS AT END OF HALLWAY - going UP
+            stairs = [];
+            for(let i = 0; i < 20; i++) {
+                const step = new THREE.Mesh(new THREE.BoxGeometry(9.8, 0.4, 1.5), new THREE.MeshStandardMaterial({color: 0x555555, roughness: 0.7}));
+                step.position.set(56, 0 + i * 0.5, -68 - i * 1.5);
                 step.receiveShadow = true;
                 step.castShadow = true;
-                step.userData.isWall = true;
+                step.userData.isStair = true;
                 scene.add(step);
-                walls.push(step);
+                stairs.push(step);
             }
             
-            // Bright exit light - at bottom of stairs
-            exitLight = new THREE.PointLight(0xffffee, 10, 30);
-            exitLight.position.set(56, -5, -95);
+            // BRIGHT EXIT LIGHT at top of stairs - bright up close, dim far away
+            exitLight = new THREE.PointLight(0xffff66, 50, 20);
+            exitLight.position.set(56, 10, -100);
+            exitLight.castShadow = false;
+            exitLight.decay = 2;
             scene.add(exitLight);
             
+            // Giant glowing sphere for exit
             const exitGlow = new THREE.Mesh(
-                new THREE.SphereGeometry(2, 16, 16),
-                new THREE.MeshBasicMaterial({color: 0xffffee})
+                new THREE.SphereGeometry(3, 32, 32),
+                new THREE.MeshBasicMaterial({color: 0xffff66, transparent: true, opacity: 0.95})
             );
-            exitGlow.position.set(56, -5, -95);
+            exitGlow.position.set(56, 10, -100);
             scene.add(exitGlow);
             
-            // Door - doors start together blocking hallway entrance
+            // Additional rim light around exit
+            const exitRim = new THREE.PointLight(0xffffaa, 30, 15);
+            exitRim.position.set(56, 10, -100);
+            exitRim.decay = 2;
+            scene.add(exitRim);
+            
+            // Door - doors sized to EXACTLY fill the opening (51 to 61)
             const doorMat = new THREE.MeshStandardMaterial({color: 0x5a0000, roughness: 0.5, metalness: 0.3});
-            doorLeft = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 0.2), doorMat);
-            doorRight = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 0.2), doorMat);
-            doorLeft.position.set(54.75, 1.75, -49.9);
-            doorRight.position.set(57.25, 1.75, -49.9);
+            doorLeft = new THREE.Mesh(new THREE.BoxGeometry(5, 3.5, 0.2), doorMat);
+            doorRight = new THREE.Mesh(new THREE.BoxGeometry(5, 3.5, 0.2), doorMat);
+            doorLeft.position.set(53.5, 1.75, -49.9);
+            doorRight.position.set(58.5, 1.75, -49.9);
             doorLeft.castShadow = true;
             doorRight.castShadow = true;
             doorLeft.userData.isDoor = true;
@@ -401,11 +409,6 @@
             window.addEventListener('keydown', checkF);
         }
         
-        // Add slideUp animation
-        const style = document.createElement('style');
-        style.textContent = '@keyframes slideUp { 0% { top: 50%; opacity: 1; } 100% { top: 75%; opacity: 0; } }';
-        document.head.appendChild(style);
-        
         function goToMenu() {
             document.exitPointerLock();
             location.reload();
@@ -470,14 +473,14 @@
                 new THREE.Vector3(newPos.x + 0.4, newPos.y + 0.3, newPos.z + 0.4)
             );
             
-            // Check all walls including stairs
+            // Check all walls (not stairs - stairs are climbable)
             for (let wall of walls) {
                 const wallBox = new THREE.Box3().setFromObject(wall);
                 if (playerBox.intersectsBox(wallBox)) return true;
             }
             
-            // Check door collision - only block if door isn't fully open
-            if (!doorOpening || doorOpenAmount < 2) {
+            // Don't check door collision if doors are fully open
+            if (!doorAnimationComplete) {
                 if (doorLeft.visible) {
                     const leftBox = new THREE.Box3().setFromObject(doorLeft);
                     if (playerBox.intersectsBox(leftBox)) return true;
@@ -488,10 +491,26 @@
                 }
             }
             
-            // Prevent player from going below ground or too high
-            if (newPos.y < 1.7 || newPos.y > 10) return true;
+            // Prevent player from going too high
+            if (newPos.y > 20) return true;
             
             return false;
+        }
+        
+        function getStairHeight(pos) {
+            // Check if player is on stairs
+            for (let i = 0; i < stairs.length; i++) {
+                const step = stairs[i];
+                const stepBox = new THREE.Box3().setFromObject(step);
+                
+                // Check if player's XZ position is within stair bounds
+                if (pos.x >= stepBox.min.x && pos.x <= stepBox.max.x &&
+                    pos.z >= stepBox.min.z && pos.z <= stepBox.max.z) {
+                    // Return the top of this step
+                    return stepBox.max.y;
+                }
+            }
+            return null;
         }
         
         function checkLookingAt() {
@@ -546,6 +565,13 @@
                 direction.normalize();
                 
                 const newPos = camera.position.clone().add(direction.multiplyScalar(0.1));
+                
+                // Check if on stairs and adjust height
+                const stairHeight = getStairHeight(newPos);
+                if (stairHeight !== null) {
+                    newPos.y = stairHeight + 1.7; // Player eye height above step
+                }
+                
                 if (!checkCollision(newPos)) {
                     camera.position.copy(newPos);
                 }
@@ -573,39 +599,44 @@
                     document.getElementById('obj1').classList.add('complete');
                     document.getElementById('interaction').style.display = 'none';
                     keyMesh.userData.canInteract = false;
-                } else                 if (lookingAtObject.userData.isDoor && hasKey && !doorOpening) {
+                } else if (lookingAtObject.userData.isDoor && hasKey && !doorOpening) {
                     doorOpening = true;
                     document.getElementById('obj2').classList.add('complete');
                     doorLeft.userData.canInteract = false;
                     doorRight.userData.canInteract = false;
-                    
-                    // IMMEDIATELY remove blocking wall when door starts opening
-                    if (blockingWall) {
-                        scene.remove(blockingWall);
-                        const wallIndex = walls.indexOf(blockingWall);
-                        if (wallIndex > -1) walls.splice(wallIndex, 1);
-                        blockingWall = null;
-                    }
+                    document.getElementById('interaction').style.display = 'none';
                 }
                 
                 setTimeout(() => keys['e_used'] = false, 300);
             }
             
-            // DOOR OPENING ANIMATION - doors slide apart revealing hallway
-            if (doorOpening) {
-                doorOpenAmount += 0.04;
-                doorLeft.position.x = 54.75 - doorOpenAmount * 3;
-                doorRight.position.x = 57.25 + doorOpenAmount * 3;
+            // DOOR OPENING ANIMATION - smooth swing open
+            if (doorOpening && !doorAnimationComplete) {
+                doorOpenAmount += 0.02;
                 
-                if (doorOpenAmount >= 2) {
-                    doorLeft.visible = false;
-                    doorRight.visible = false;
+                if (doorOpenAmount >= 1) {
+                    doorOpenAmount = 1;
+                    doorAnimationComplete = true;
                 }
+                
+                // Swing doors outward (toward player) with easing
+                const eased = 1 - Math.pow(1 - doorOpenAmount, 3); // Ease out cubic
+                const maxAngle = Math.PI / 2; // 90 degrees
+                
+                // Left door swings left
+                doorLeft.rotation.y = -maxAngle * eased;
+                doorLeft.position.x = 53.5 - Math.sin(maxAngle * eased) * 2.5;
+                doorLeft.position.z = -49.9 + Math.cos(maxAngle * eased) * 2.5 - 2.5;
+                
+                // Right door swings right
+                doorRight.rotation.y = maxAngle * eased;
+                doorRight.position.x = 58.5 + Math.sin(maxAngle * eased) * 2.5;
+                doorRight.position.z = -49.9 + Math.cos(maxAngle * eased) * 2.5 - 2.5;
             }
             
             // Check if player reached exit light
             const exitDist = camera.position.distanceTo(exitLight.position);
-            if (exitDist < 4 && !gameWon) {
+            if (exitDist < 6 && !gameWon) {
                 gameWon = true;
                 document.getElementById('obj3').classList.add('complete');
                 document.getElementById('escapeScreen').style.display = 'flex';
